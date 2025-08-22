@@ -17,7 +17,16 @@ JUDGE_CAT = [0, 1, 2, 3]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--qrel", type=str, help="qrels file", required=True)
+    parser.add_argument("--qrel", type=str, help="qrels file")
+    parser.add_argument("--custom_qrel_path", type=str, help="path to custom qrel file")
+    parser.add_argument("--corpus", type=str, help="corpus identifier (for backward compatibility)")
+    parser.add_argument("--query_mapping_file", type=str, help="path to query mappings file")
+    parser.add_argument("--query_mapping_format", type=str, default="auto",
+                        help="format of query mapping file (auto, json, json_simple, tsv, xml)")
+    parser.add_argument("--passage_retriever_type", type=str,
+                        help="type of passage retriever (pyserini_msmarco_v1, json_file, etc.)")
+    parser.add_argument("--passage_file_path", type=str, help="path to passage file")
+    parser.add_argument("--index_path", type=str, help="path to custom Pyserini index")
     parser.add_argument("--result_file", type=str, help="retriever result file")
     parser.add_argument("--prompt_file", type=str, help="prompt file")
     parser.add_argument(
@@ -30,6 +39,7 @@ def main():
     )
     parser.add_argument("--num_sample", type=int, default=1)
     parser.add_argument("--regenerate", action="store_true")
+    parser.add_argument("--device", type=str, help="device for HGFLLMJudge")
 
     args = parser.parse_args()
     load_dotenv()
@@ -44,6 +54,13 @@ def main():
         model_names
     ), "incomplete list of LLM judges or model names"
 
+    # Prepare passage retriever kwargs
+    passage_retriever_kwargs = {}
+    if args.passage_file_path:
+        passage_retriever_kwargs['passage_file_path'] = args.passage_file_path
+    if args.index_path:
+        passage_retriever_kwargs['index_path'] = args.index_path
+
     results = []
     for i in range(len(llm_judges)):
         llm_judge = llm_judges[i]
@@ -53,13 +70,28 @@ def main():
             cls = globals().get(llm_judge)
         except:
             raise ValueError(f"Invalid value for llm_judge: {llm_judge}")
-        judge = cls(
-            args.qrel,
-            model_names[i].strip(),
-            args.prompt_file,
-            args.prompt_type,
-            args.few_shot_count,
-        )
+        
+        # Prepare judge-specific arguments
+        judge_kwargs = {
+            'qrel': args.qrel,
+            'model_name': model_names[i].strip(),
+            'prompt_file': args.prompt_file,
+            'prompt_type': args.prompt_type,
+            'few_shot_count': args.few_shot_count,
+            'corpus': args.corpus,
+            'query_mapping_file': args.query_mapping_file,
+            'custom_qrel_path': args.custom_qrel_path,
+            'query_mapping_format': args.query_mapping_format,
+            'passage_retriever_type': args.passage_retriever_type,
+            **passage_retriever_kwargs
+        }
+        
+        # Add device parameter for HGFLLMJudge
+        if llm_judge == "HGFLLMJudge" and args.device:
+            judge_kwargs['device'] = args.device
+
+        judge = cls(**judge_kwargs)
+        
         output_file = judge.evalute_results_with_qrel(
             args.result_file,
             regenerate=args.regenerate,
@@ -83,7 +115,7 @@ def main():
     combined_model_name = "-".join(
         model_names[i].strip().split("/")[-1] for i in range(len(model_names))
     )
-    path = qrel_utils.get_qrels_file(args.qrel)
+    path = qrel_utils.get_qrel_path(args.qrel or args.custom_qrel_path)
     modified_qrel = f"{result_dir}/{os.path.basename(path)[:-4]}_{combined_model_name}_{''.join(map(str, JUDGE_CAT))}_{args.few_shot_count}_{args.num_sample}.txt"
     common_utils.write_modified_qrel(final_qd, modified_qrel)
     print("-" * 79)
@@ -91,7 +123,7 @@ def main():
     print(f"Output file: {modified_qrel}")
     print("-" * 79)
 
-    org_qd = qrel_utils.get_qrels(args.qrel)
+    org_qd = qrel_utils.get_qrels(args.qrel or args.custom_qrel_path)
     unmatch_dict = {}
     gts, preds = [], []
     for qid in org_qd:
@@ -105,7 +137,7 @@ def main():
                 unmatch_dict[int(org_qd[qid][docid])].append(curr_res)
 
     common_utils.calculate_kappa(gts, preds)
-    common_utils.draw_confusion_matrix(gts, preds, args.qrel, combined_model_name)
+    common_utils.draw_confusion_matrix(gts, preds, args.qrel or args.custom_qrel_path, combined_model_name)
     for cat in unmatch_dict:
         print(
             f"Stats for {cat}. Correct judgments count: {sum(unmatch_dict[cat])}/{len(unmatch_dict[cat])}"

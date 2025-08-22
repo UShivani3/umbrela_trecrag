@@ -18,13 +18,34 @@ JUDGE_CAT = [0, 1, 2, 3]
 class GeminiJudge(LLMJudge):
     def __init__(
         self,
-        qrel: str,
-        model_name: str,
+        qrel: str = None,
+        model_name: str = None,
         prompt_file: Optional[str] = None,
         prompt_type: Optional[str] = "bing",
         few_shot_count: int = 0,
+        corpus: str = None,
+        query_mapping_file: str = None,
+        # New parameters for enhanced qrel support
+        custom_qrel_path: str = None,
+        custom_query_mappings: dict = None,
+        query_mapping_format: str = "auto",
+        passage_retriever_type: str = None,
+        **passage_retriever_kwargs
     ) -> None:
-        super().__init__(qrel, model_name, prompt_file, prompt_type, few_shot_count)
+        super().__init__(
+            qrel=qrel,
+            corpus=corpus,
+            query_mapping_file=query_mapping_file,
+            model_name=model_name,
+            prompt_file=prompt_file,
+            prompt_type=prompt_type,
+            few_shot_count=few_shot_count,
+            custom_qrel_path=custom_qrel_path,
+            custom_query_mappings=custom_query_mappings,
+            query_mapping_format=query_mapping_format,
+            passage_retriever_type=passage_retriever_type,
+            **passage_retriever_kwargs
+        )
         self.create_gemini_client()
 
     def create_gemini_client(self):
@@ -40,10 +61,13 @@ class GeminiJudge(LLMJudge):
                 prompt,
                 generation_config=GenerationConfig(
                     max_output_tokens=max_new_tokens,
+                    temperature=0,
+                    top_p=1,
                 ),
             )
-            output = response.text
-        except:
+            output = response.text.lower() if response.text else ""
+        except Exception as e:
+            print(f"Encountered {e} for {prompt}")
             output = ""
         return output
 
@@ -75,7 +99,16 @@ class GeminiJudge(LLMJudge):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--qrel", type=str, help="qrels file", required=True)
+    parser.add_argument("--qrel", type=str, help="qrels file")
+    parser.add_argument("--custom_qrel_path", type=str, help="path to custom qrel file")
+    parser.add_argument("--corpus", type=str, help="corpus identifier (for backward compatibility)")
+    parser.add_argument("--query_mapping_file", type=str, help="path to query mappings file")
+    parser.add_argument("--query_mapping_format", type=str, default="auto",
+                        help="format of query mapping file (auto, json, json_simple, tsv, xml)")
+    parser.add_argument("--passage_retriever_type", type=str,
+                        help="type of passage retriever (pyserini_msmarco_v1, json_file, etc.)")
+    parser.add_argument("--passage_file_path", type=str, help="path to passage file")
+    parser.add_argument("--index_path", type=str, help="path to custom Pyserini index")
     parser.add_argument("--result_file", type=str, help="retriever result file")
     parser.add_argument("--prompt_file", type=str, help="prompt file")
     parser.add_argument(
@@ -91,8 +124,25 @@ def main():
     args = parser.parse_args()
     load_dotenv()
 
+    # Prepare passage retriever kwargs
+    passage_retriever_kwargs = {}
+    if args.passage_file_path:
+        passage_retriever_kwargs['passage_file_path'] = args.passage_file_path
+    if args.index_path:
+        passage_retriever_kwargs['index_path'] = args.index_path
+
     judge = GeminiJudge(
-        args.qrel, args.model, args.prompt_file, args.prompt_type, args.few_shot_count
+        qrel=args.qrel,
+        model_name=args.model,
+        prompt_file=args.prompt_file,
+        prompt_type=args.prompt_type,
+        few_shot_count=args.few_shot_count,
+        corpus=args.corpus,
+        query_mapping_file=args.query_mapping_file,
+        custom_qrel_path=args.custom_qrel_path,
+        query_mapping_format=args.query_mapping_format,
+        passage_retriever_type=args.passage_retriever_type,
+        **passage_retriever_kwargs
     )
     judge.evalute_results_with_qrel(
         args.result_file,
